@@ -10,4 +10,17 @@ Note: currently the espressif32 is seto to 6.6.0 in platformio.ini, this is just
 (you can look at the git history of project to see the steps taken too)
 1. Create a new Platform IO project
 1. Add ESP-ADF submodule with this command: `git submodule add https://github.com/espressif/esp-adf.git esp-adf`
-1. 
+1. Clone all nested submodules with this command: `git submodule update --init --recursive`
+1. Setup platformio.ini settings:
+```
+board_build.embed_txtfiles = 
+  esp-adf/components/dueros_service/duer_profile
+    
+build_flags =
+  -D CONFIG_ESP32_CORVO_DU1906_BOARD
+  -I lib/esp_peripherals/
+
+build_unflags = 
+  -Wl,--end-group
+```
+1. Add ADF components to root CMakeLists.txt: `list(APPEND EXTRA_COMPONENT_DIRS "esp-adf/components")`
