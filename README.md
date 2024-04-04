@@ -26,6 +26,10 @@ build_unflags =
 5. Add ADF components to root CMakeLists.txt: `list(APPEND EXTRA_COMPONENT_DIRS "esp-adf/components")`
 6. Change setting in sdkconfig.esp32dev: `CONFIG_FREERTOS_ENABLE_BACKWARD_COMPATIBILITY=y`
 
+Notes: 
+* You can just move esp-adf/components to /components and don't need full git repository
+* You don't need esp-adf/esp-idf (typically old version): `git submodule deinit esp-idf`
+
 ##  Optional add example
 
 1. Add to CMakeLists.txt: `set(COMPONENT_SRCS adf_music.mp3)`
