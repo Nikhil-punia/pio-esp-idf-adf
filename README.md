@@ -4,7 +4,7 @@
 Currently PlatformIO doesn't support ADF natively, so there are some steps to get it working.
 You can just clone this repo and start using it, but I have also listed the steps below.
 
-Note: currently the espressif32 is seto to 6.5.0 in platformio.ini, this is just as I know this version works.
+Note: currently the espressif32 is seto to 6.6.0 in platformio.ini, this is just as I know this version works.
 
 ## To do it yourself
 (you can look at the git history of project to see the steps taken too)
@@ -25,6 +25,8 @@ build_unflags =
 ```
 5. Add ADF components to root CMakeLists.txt: `list(APPEND EXTRA_COMPONENT_DIRS "esp-adf/components")`
 6. Change setting in sdkconfig.esp32dev: `CONFIG_FREERTOS_ENABLE_BACKWARD_COMPATIBILITY=y`
+6. Change setting in sdkconfig.esp32dev: `CONFIG_FREERTOS_UNICORE=y` (This was needed in espressif32 6.6 but not 6.5)
+
 
 Notes: 
 * You can just move esp-adf/components to /components and don't need full git repository
