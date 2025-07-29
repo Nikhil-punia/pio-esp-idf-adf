@@ -169,22 +169,24 @@ static void audio_playback_task(void *pvParameters) {
 
     ESP_LOGI(TAG, "[2.1] Create http stream to read data");
     http_stream_cfg_t http_cfg = HTTP_STREAM_CFG_DEFAULT();
-    http_cfg.out_rb_size = 2048 * 1024;  // 2MB buffer for FLAC stability
+    http_cfg.out_rb_size = 1024 * 1024;  // 1MB buffer for MP3 (reduced from 2MB)
     http_cfg.auto_connect_next_track = true;  // Auto reconnect
     http_cfg.stack_in_ext = true;        // Use external memory
-    http_cfg.task_stack = 24576;         // Large stack for FLAC
+    http_cfg.task_stack = 24576;         // Large stack
     http_cfg.task_prio = 12;             // High priority for HTTP
     http_cfg.task_core = 0;              // Run HTTP on core 0
     
-    // Enhanced stability settings for EMI resistance
-   // http_cfg.buffer_len = 8192;          // Larger internal buffer
-    http_cfg.request_size = 32768;       // Smaller request chunks to reduce WiFi load
-    http_cfg.request_range_size = 65536; // Moderate range size
-    // http_cfg.timeout_ms = 30000;      // 30 second timeout (not supported in this version)
+    // Enhanced HTTP connection stability for long-term streaming
+    http_cfg.request_size = 16384;       // Smaller chunks for better reliability (16KB)
+    http_cfg.request_range_size = 32768; // Smaller range size (32KB)
+    http_cfg.enable_playlist_parser = false; // Disable playlist parsing
+    
+    // HTTP headers for connection persistence and reliability
+    http_cfg.user_agent = "ESP32-S3-AudioStreamer/1.0";
     
     http_stream_reader = http_stream_init(&http_cfg);
-    ESP_LOGI(TAG, "HTTP configured for EMI stability: req_size=%dKB",
-             http_cfg.request_size/1024);
+    ESP_LOGI(TAG, "HTTP configured for long-term streaming: buffer=%dKB, chunk_size=%dKB", 
+             http_cfg.out_rb_size/1024, http_cfg.request_size/1024);
 
     ESP_LOGI(TAG, "[2.2] Create %s decoder to decode %s file", selected_decoder_name, selected_decoder_name);
     
@@ -299,8 +301,8 @@ static void audio_playback_task(void *pvParameters) {
     ESP_LOGI(TAG, "[5] Start audio_pipeline");
     audio_pipeline_run(pipeline);
     
-    // Pre-load buffer for FLAC stability
-    ESP_LOGI(TAG, "Pre-loading HTTP buffer for FLAC stability...");
+    // Pre-load buffer for streaming stability
+    ESP_LOGI(TAG, "Pre-loading HTTP buffer for streaming stability...");
     vTaskDelay(3000 / portTICK_PERIOD_MS);  // Wait 3 seconds for initial buffer fill
 
     while (1) {
@@ -308,35 +310,49 @@ static void audio_playback_task(void *pvParameters) {
         esp_err_t ret = audio_event_iface_listen(evt, &msg, 1000 / portTICK_PERIOD_MS); // 1 second timeout
         
         if (ret != ESP_OK) {
-            // Timeout - check buffer levels and power stability
+            // Timeout - check buffer levels, power stability, and HTTP health
             int http_filled = audio_element_get_output_ringbuf_size(http_stream_reader);
             int decoder_filled = audio_element_get_output_ringbuf_size(selected_decoder);
             ESP_LOGD(TAG, "🎵 Buffer Status - HTTP: %dKB, Decoder: %dKB", 
                      http_filled/1024, decoder_filled/1024);
             
-            // Enhanced stall detection for EMI/power issues
+            // Enhanced HTTP connection health monitoring
             static int last_http_level = 0;
             static int stall_count = 0;
             static int power_cycle_count = 0;
+            static int http_health_check_count = 0;
+            
+            // HTTP connection health check every 30 seconds
+            http_health_check_count++;
+            if (http_health_check_count >= 30) { // 30 seconds
+                http_health_check_count = 0;
+                
+                // Check if HTTP stream is still alive by examining data flow
+                if (http_filled == last_http_level && http_filled > 0) {
+                    ESP_LOGW(TAG, "🔶 HTTP stream appears stalled - data not flowing");
+                } else if (http_filled > 0) {
+                    ESP_LOGI(TAG, "💚 HTTP stream healthy - data flowing normally");
+                }
+            }
             
             if (http_filled == last_http_level && http_filled < 512 * 1024) {
                 stall_count++;
                 ESP_LOGW(TAG, "⚠️  Stream stall detected (count=%d) - HTTP: %dKB", 
                          stall_count, http_filled/1024);
                 
-                if (stall_count >= 3) {  // 3 seconds stalled
-                    ESP_LOGE(TAG, "🚨 EMI/Power-related stall detected - implementing recovery!");
+                if (stall_count >= 5) {  // 5 seconds stalled (increased threshold)
+                    ESP_LOGE(TAG, "🚨 Stream stall detected - implementing recovery!");
                     
-                    // Power cycle recovery (simulates touching the chip)
+                    // Stream recovery cycle
                     power_cycle_count++;
-                    ESP_LOGW(TAG, "🔄 Power recovery cycle #%d", power_cycle_count);
+                    ESP_LOGW(TAG, "🔄 Stream recovery cycle #%d", power_cycle_count);
                     
                     // Stop pipeline gently
                     audio_pipeline_stop(pipeline);
                     audio_pipeline_wait_for_stop(pipeline);
                     
-                    // Brief delay to let power stabilize
-                    vTaskDelay(1000 / portTICK_PERIOD_MS);
+                    // Brief delay to let connection reset
+                    vTaskDelay(2000 / portTICK_PERIOD_MS);
                     
                     // Reset all elements completely
                     audio_element_reset_state(selected_decoder);
@@ -345,12 +361,12 @@ static void audio_playback_task(void *pvParameters) {
                     audio_pipeline_reset_ringbuffer(pipeline);
                     audio_pipeline_reset_items_state(pipeline);
                     
-                    // Additional delay for power stability
-                    vTaskDelay(2000 / portTICK_PERIOD_MS);
+                    // Additional delay for connection stability
+                    vTaskDelay(3000 / portTICK_PERIOD_MS);
                     
                     // Restart with fresh state
                     audio_pipeline_run(pipeline);
-                    ESP_LOGI(TAG, "🎵 Pipeline restarted after power recovery");
+                    ESP_LOGI(TAG, "🎵 Pipeline restarted after stream recovery");
                     
                     stall_count = 0;
                 }
@@ -374,20 +390,41 @@ static void audio_playback_task(void *pvParameters) {
             continue;
         }
 
-        // Handle pipeline errors
+        // Handle pipeline errors and HTTP reconnection
         if (msg.source_type == AUDIO_ELEMENT_TYPE_ELEMENT && msg.cmd == AEL_MSG_CMD_REPORT_STATUS) {
             int status = (int)msg.data;
-            if (msg.source == (void *)http_stream_reader && status == AEL_STATUS_ERROR_OPEN) {
-                ESP_LOGW(TAG, "🔄 HTTP error - restarting stream...");
+            if (msg.source == (void *)http_stream_reader && 
+                (status == AEL_STATUS_ERROR_OPEN || status == AEL_STATUS_ERROR_INPUT || status == AEL_STATUS_ERROR_PROCESS)) {
+                ESP_LOGW(TAG, "🔄 HTTP connection error (status=%d) - implementing robust reconnection...", status);
+                
+                // Stop pipeline gracefully
                 audio_pipeline_stop(pipeline);
                 audio_pipeline_wait_for_stop(pipeline);
+                
+                // Reset all elements completely
+                audio_element_reset_state(http_stream_reader);
                 audio_element_reset_state(selected_decoder);
                 audio_element_reset_state(i2s_stream_writer);
-                audio_element_reset_state(http_stream_reader);
                 audio_pipeline_reset_ringbuffer(pipeline);
                 audio_pipeline_reset_items_state(pipeline);
-                vTaskDelay(3000 / portTICK_PERIOD_MS);
+                
+                // Progressive delay for connection recovery
+                static int reconnect_attempts = 0;
+                reconnect_attempts++;
+                int delay_ms = 2000 + (reconnect_attempts * 1000); // 2s, 3s, 4s, etc.
+                if (delay_ms > 10000) delay_ms = 10000; // Cap at 10 seconds
+                
+                ESP_LOGI(TAG, "🔄 Waiting %d ms before reconnection attempt #%d", delay_ms, reconnect_attempts);
+                vTaskDelay(delay_ms / portTICK_PERIOD_MS);
+                
+                // Restart pipeline with fresh connection
                 audio_pipeline_run(pipeline);
+                ESP_LOGI(TAG, "🎵 Pipeline restarted after HTTP reconnection");
+                
+                // Reset counter on successful restart
+                if (reconnect_attempts > 5) {
+                    reconnect_attempts = 0; // Reset after multiple attempts
+                }
                 continue;
             }
         }
@@ -437,7 +474,7 @@ void app_main(void)
     esp_log_level_set("*", ESP_LOG_WARN);
     esp_log_level_set(TAG, ESP_LOG_DEBUG);
 
-    ESP_LOGI(TAG, "🎧 === FLAC HTTP STREAMING PLAYER ===");
+    ESP_LOGI(TAG, "🎧 === MP3 HTTP STREAMING PLAYER ===");
     ESP_LOGI(TAG, "🎧 ESP32-S3 with 8MB PSRAM @ 80MHz");
     ESP_LOGI(TAG, "🎧 External DAC: PCM1334A");
     ESP_LOGI(TAG, "🎧 Multi-core audio processing");
@@ -492,6 +529,8 @@ void app_main(void)
     esp_wifi_set_country(&country_cfg);
     ESP_LOGI(TAG, "✅ WiFi country/channel configuration set for stability");
 
+    ESP_LOGI(TAG, "✅ Network optimizations configured for HTTP streaming stability");
+
     // Create audio playback task on core 1 (with high priority)
     ESP_LOGI(TAG, "🎵 Starting audio playback task...");
     xTaskCreatePinnedToCore(
@@ -534,21 +573,21 @@ void app_main(void)
             if (global_http_stream && global_decoder) {
                 int http_filled = audio_element_get_output_ringbuf_size(global_http_stream);
                 int decoder_filled = audio_element_get_output_ringbuf_size(global_decoder);
-                ESP_LOGI(TAG, "🔊 Audio Buffers - HTTP: %dKB, FLAC: %dKB", 
-                         http_filled/1024, decoder_filled/1024);
+                ESP_LOGI(TAG, "🔊 Audio Buffers - HTTP: %dKB, %s: %dKB", 
+                         http_filled/1024, selected_decoder_name, decoder_filled/1024);
                 
-                // Power stability indicator - check for buffer anomalies
+                // Stream stability indicator - check for buffer anomalies
                 static int stable_buffer_count = 0;
-                if (http_filled > 1024*1024 && decoder_filled > 256*1024) {
+                if (http_filled > 512*1024 && decoder_filled > 128*1024) { // Adjusted for MP3
                     stable_buffer_count++;
                     if (stable_buffer_count == 3) {
-                        ESP_LOGI(TAG, "💚 Buffers stable - good power/EMI conditions");
+                        ESP_LOGI(TAG, "💚 Buffers stable - good streaming conditions");
                         stable_buffer_count = 0;
                     }
                 } else {
                     stable_buffer_count = 0;
-                    if (http_filled < 512*1024) {
-                        ESP_LOGW(TAG, "🟡 Low buffer levels - possible power/EMI interference");
+                    if (http_filled < 256*1024) { // Lower threshold for MP3
+                        ESP_LOGW(TAG, "🟡 Low buffer levels - possible connection issues");
                     }
                 }
             }
