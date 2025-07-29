@@ -19,6 +19,7 @@
 #include "audio_pipeline.h"
 #include "audio_event_iface.h"
 #include "audio_common.h"
+#include "../http_stream_streaming_patch.h"  // Apply streaming optimizations
 #include "http_stream.h"
 #include "i2s_stream.h"
 
@@ -139,7 +140,7 @@ static const char *selected_file_to_play = "https://dl.espressif.com/dl/audio/ff
 #elif defined SELECT_MP3_DECODER
 static const char *TAG = "HTTP_SELECT_MP3_EXAMPLE";
 static const char *selected_decoder_name = "mp3";
-static const char *selected_file_to_play = "https://stream.zeno.fm/vq6p5vxb4v8uv";
+static const char *selected_file_to_play = "https://stream.zeno.fm/vq6p5vxb4v8uv";  // Back to original Zeno.fm URL
 #elif defined SELECT_OGG_DECODER
 static const char *TAG = "HTTP_SELECT_OGG_EXAMPLE";
 static const char *selected_decoder_name = "ogg";
@@ -169,24 +170,28 @@ static void audio_playback_task(void *pvParameters) {
 
     ESP_LOGI(TAG, "[2.1] Create http stream to read data");
     http_stream_cfg_t http_cfg = HTTP_STREAM_CFG_DEFAULT();
-    http_cfg.out_rb_size = 1024 * 1024;  // 1MB buffer for MP3 (reduced from 2MB)
-    http_cfg.auto_connect_next_track = true;  // Auto reconnect
-    http_cfg.stack_in_ext = true;        // Use external memory
-    http_cfg.task_stack = 24576;         // Large stack
-    http_cfg.task_prio = 12;             // High priority for HTTP
-    http_cfg.task_core = 0;              // Run HTTP on core 0
     
-    // Enhanced HTTP connection stability for long-term streaming
-    http_cfg.request_size = 16384;       // Smaller chunks for better reliability (16KB)
-    http_cfg.request_range_size = 32768; // Smaller range size (32KB)
-    http_cfg.enable_playlist_parser = false; // Disable playlist parsing
+    // Optimized buffer configuration for streaming
+    http_cfg.out_rb_size = 2 * 1024 * 1024;    // 2MB buffer for stable streaming
+    http_cfg.request_size = 32768;              // 32KB chunks for optimal streaming
+    http_cfg.request_range_size = 0;            // Disable range requests for live streams
     
-    // HTTP headers for connection persistence and reliability
-    http_cfg.user_agent = "ESP32-S3-AudioStreamer/1.0";
+    // Task optimization for streaming
+    http_cfg.stack_in_ext = true;               // Use external memory (PSRAM)
+    http_cfg.task_stack = 32768;                // 32KB stack for HTTP processing
+    http_cfg.task_prio = 12;                    // High priority for HTTP
+    http_cfg.task_core = 0;                     // Run HTTP on core 0
+    
+    // Streaming-optimized settings
+    http_cfg.auto_connect_next_track = true;    // Enable auto-reconnection
+    http_cfg.enable_playlist_parser = false;    // Disable for direct streams
+    
+    // User agent for server compatibility
+    http_cfg.user_agent = "Mozilla/5.0 (compatible; ESP32-AudioStreamer/1.0)";
     
     http_stream_reader = http_stream_init(&http_cfg);
-    ESP_LOGI(TAG, "HTTP configured for long-term streaming: buffer=%dKB, chunk_size=%dKB", 
-             http_cfg.out_rb_size/1024, http_cfg.request_size/1024);
+    ESP_LOGI(TAG, "HTTP configured for continuous streaming: buffer=%dMB, chunk_size=%dKB", 
+             http_cfg.out_rb_size/(1024*1024), http_cfg.request_size/1024);
 
     ESP_LOGI(TAG, "[2.2] Create %s decoder to decode %s file", selected_decoder_name, selected_decoder_name);
     
@@ -301,9 +306,9 @@ static void audio_playback_task(void *pvParameters) {
     ESP_LOGI(TAG, "[5] Start audio_pipeline");
     audio_pipeline_run(pipeline);
     
-    // Pre-load buffer for streaming stability
+    // Pre-load buffer for streaming stability - reduced time due to larger buffers
     ESP_LOGI(TAG, "Pre-loading HTTP buffer for streaming stability...");
-    vTaskDelay(3000 / portTICK_PERIOD_MS);  // Wait 3 seconds for initial buffer fill
+    vTaskDelay(1500 / portTICK_PERIOD_MS);  // Reduced to 1.5 seconds with larger buffers
 
     while (1) {
         audio_event_iface_msg_t msg;

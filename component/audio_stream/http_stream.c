@@ -58,8 +58,8 @@
 
 static const char *TAG = "HTTP_STREAM";
 #define MAX_PLAYLIST_LINE_SIZE (512)
-#define HTTP_STREAM_BUFFER_SIZE (2048)
-#define HTTP_MAX_CONNECT_TIMES  (5)
+#define HTTP_STREAM_BUFFER_SIZE (16384)  // Increased for streaming stability (was 2048)
+#define HTTP_MAX_CONNECT_TIMES  (20)     // More retries for robust streaming (was 5)
 
 #define HLS_PREFER_BITRATE      (200*1024)
 #define HLS_KEY_CACHE_SIZE      (32)
@@ -578,11 +578,15 @@ _stream_open_begin:
             .url = uri,
             .event_handler = _http_event_handle,
             .user_data = self,
-            .timeout_ms = 30 * 1000,
+            .timeout_ms = 60 * 1000,         // Longer timeout for streaming (was 30s)
             .buffer_size = HTTP_STREAM_BUFFER_SIZE,
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(4, 1, 0)
-            .buffer_size_tx = 1024,
+            .buffer_size_tx = 4096,          // Larger TX buffer for streaming (was 1024)
 #endif
+            .keep_alive_enable = true,       // Enable keep-alive for streaming
+            .keep_alive_idle = 120,          // 2 minutes idle timeout
+            .keep_alive_interval = 30,       // 30 second keep-alive interval  
+            .keep_alive_count = 5,           // 5 keep-alive attempts
             .cert_pem = http->cert_pem,
 #if  (ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(4, 3, 0)) && defined CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
             .crt_bundle_attach = http->crt_bundle_attach,
