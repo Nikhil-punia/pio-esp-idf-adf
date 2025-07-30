@@ -3,6 +3,7 @@
     "sdkconfig.h": "c",
     "esp_log.h": "c",
     "mp3_decoder.h": "c",
-    "i2s_stream.h": "c"
+    "i2s_stream.h": "c",
+    "wav_decoder.h": "c"
   }
 }
