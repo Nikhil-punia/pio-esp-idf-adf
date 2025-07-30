@@ -179,7 +179,7 @@ static audio_element_handle_t create_decoder_for_format(audio_format_t format)
         case AUDIO_FORMAT_MP3: {
             mp3_decoder_cfg_t mp3_cfg = DEFAULT_MP3_DECODER_CONFIG();
             mp3_cfg.out_rb_size = 512 * 1024;
-            mp3_cfg.task_stack = 4096;  // Increase stack size
+            mp3_cfg.task_stack = 4096 * 3;  // Increase stack size
             mp3_cfg.task_prio = 5;      // Set priority
             mp3_cfg.task_core = 1;      // Pin to core 1
             decoder = mp3_decoder_init(&mp3_cfg);
@@ -188,7 +188,7 @@ static audio_element_handle_t create_decoder_for_format(audio_format_t format)
         case AUDIO_FORMAT_AAC: {
             aac_decoder_cfg_t aac_cfg = DEFAULT_AAC_DECODER_CONFIG();
             aac_cfg.out_rb_size = 512 * 1024;
-            aac_cfg.task_stack = 4096;  // Increase stack size
+            aac_cfg.task_stack = 4096 * 3;  // Increase stack size
             aac_cfg.task_prio = 5;      // Set priority
             aac_cfg.task_core = 1;      // Pin to core 1
             decoder = aac_decoder_init(&aac_cfg);
@@ -196,8 +196,8 @@ static audio_element_handle_t create_decoder_for_format(audio_format_t format)
         }
         case AUDIO_FORMAT_FLAC: {
             flac_decoder_cfg_t flac_cfg = DEFAULT_FLAC_DECODER_CONFIG();
-            flac_cfg.out_rb_size = 1024 * 1024;  // FLAC needs more buffer
-            flac_cfg.task_stack = 6144;  // FLAC needs even more stack
+            flac_cfg.out_rb_size = 512 * 1024;  // FLAC needs more buffer
+            flac_cfg.task_stack = 1024 * 18;  // FLAC needs even more stack
             flac_cfg.task_prio = 5;      // Set priority
             flac_cfg.task_core = 1;      // Pin to core 1
             decoder = flac_decoder_init(&flac_cfg);
@@ -206,7 +206,7 @@ static audio_element_handle_t create_decoder_for_format(audio_format_t format)
         case AUDIO_FORMAT_WAV: {
             wav_decoder_cfg_t wav_cfg = DEFAULT_WAV_DECODER_CONFIG();
             wav_cfg.out_rb_size = 256 * 1024;
-            wav_cfg.task_stack = 4096;  // Increase stack size
+            wav_cfg.task_stack = 4096 * 3;  // Increase stack size
             wav_cfg.task_prio = 5;      // Set priority
             wav_cfg.task_core = 1;      // Pin to core 1
             decoder = wav_decoder_init(&wav_cfg);
@@ -215,7 +215,7 @@ static audio_element_handle_t create_decoder_for_format(audio_format_t format)
         case AUDIO_FORMAT_OGG: {
             ogg_decoder_cfg_t ogg_cfg = DEFAULT_OGG_DECODER_CONFIG();
             ogg_cfg.out_rb_size = 512 * 1024;
-            ogg_cfg.task_stack = 4096;  // Increase stack size
+            ogg_cfg.task_stack = 4096 * 3;  // Increase stack size
             ogg_cfg.task_prio = 5;      // Set priority
             ogg_cfg.task_core = 1;      // Pin to core 1
             decoder = ogg_decoder_init(&ogg_cfg);
@@ -224,7 +224,7 @@ static audio_element_handle_t create_decoder_for_format(audio_format_t format)
         case AUDIO_FORMAT_AMR: {
             amr_decoder_cfg_t amr_cfg = DEFAULT_AMR_DECODER_CONFIG();
             amr_cfg.out_rb_size = 256 * 1024;
-            amr_cfg.task_stack = 4096;  // Increase stack size
+            amr_cfg.task_stack = 4096 * 3;  // Increase stack size
             amr_cfg.task_prio = 5;      // Set priority
             amr_cfg.task_core = 1;      // Pin to core 1
             decoder = amr_decoder_init(&amr_cfg);
@@ -234,7 +234,7 @@ static audio_element_handle_t create_decoder_for_format(audio_format_t format)
             ESP_LOGW(TAG, "Unknown audio format, falling back to MP3 decoder");
             mp3_decoder_cfg_t mp3_cfg = DEFAULT_MP3_DECODER_CONFIG();
             mp3_cfg.out_rb_size = 512 * 1024;
-            mp3_cfg.task_stack = 4096;  // Increase stack size
+            mp3_cfg.task_stack = 4096 * 3;  // Increase stack size
             mp3_cfg.task_prio = 5;      // Set priority
             mp3_cfg.task_core = 1;      // Pin to core 1
             decoder = mp3_decoder_init(&mp3_cfg);
@@ -949,12 +949,15 @@ static void start_audio_pipeline(const char* url)
         return;
     }
     
-    // Create HTTP stream
+    // Create HTTP stream optimized for high-resolution streaming
     http_stream_cfg_t http_cfg = HTTP_STREAM_CFG_DEFAULT();
-    http_cfg.out_rb_size = 2 * 1024 * 1024;  // 2MB buffer
-    http_cfg.task_stack = 4096;  // Increase stack size for HTTP task
-    http_cfg.task_prio = 5;      // Set priority
+    http_cfg.out_rb_size = 1024 * 1024;  // 1MB buffer for high-res streams
+    http_cfg.task_stack = 4096 * 8;  // Larger stack for high-bandwidth streams
+    http_cfg.task_prio = 10;      // Set priority
     http_cfg.task_core = 1;      // Pin to core 1
+    http_cfg.enable_playlist_parser = true;          // Enable playlist parser
+    http_cfg.request_size = 1024 * 128;  // Larger HTTP request chunks (128KB)
+    http_cfg.request_range_size = 1024 * 256;  // 256KB range requests
     global_http_stream = http_stream_init(&http_cfg);
     if (!global_http_stream) {
         ESP_LOGE("AUDIO_PLAYER", "Failed to create HTTP stream");
@@ -991,11 +994,17 @@ static void start_audio_pipeline(const char* url)
     }
     ESP_LOGI("AUDIO_PLAYER", "🎛️  Equalizer created for volume control");
     
-    // Create I2S stream
+    // Create I2S stream optimized for high-resolution audio
     i2s_stream_cfg_t i2s_cfg = I2S_STREAM_CFG_DEFAULT();
     i2s_cfg.type = AUDIO_STREAM_WRITER;
-    i2s_cfg.buffer_len = 1024 * 18;
+    i2s_cfg.buffer_len = 1024 * 24;  // Larger buffer for high-res audio (24KB)
     i2s_cfg.use_alc = true;  // Enable ALC for volume control
+    
+    // High-resolution I2S configuration for FLAC and other lossless formats
+    // Support up to 192kHz/32-bit audio
+    i2s_cfg.chan_cfg.dma_desc_num = 8;   // More DMA buffers for smoother playback
+    i2s_cfg.chan_cfg.dma_frame_num = 1024;  // Larger DMA buffer length
+
     
     // Configure ESP32-S3 as I2S Master but WITHOUT MCLK output
     // ESP32 generates BCLK and LRCLK only, UDA1334A uses its internal PLL
