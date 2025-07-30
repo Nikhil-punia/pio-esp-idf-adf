@@ -1003,7 +1003,7 @@ static void start_audio_pipeline(const char* url)
     // High-resolution I2S configuration for FLAC and other lossless formats
     // Support up to 192kHz/32-bit audio
     i2s_cfg.chan_cfg.dma_desc_num = 8;   // More DMA buffers for smoother playback
-    i2s_cfg.chan_cfg.dma_frame_num = 1024;  // Larger DMA buffer length
+    i2s_cfg.chan_cfg.dma_frame_num = 1023;  // Larger DMA buffer length
 
     
     // Configure ESP32-S3 as I2S Master but WITHOUT MCLK output
