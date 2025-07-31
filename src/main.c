@@ -9,6 +9,7 @@
 
 #include <string.h>
 #include <ctype.h>
+#include <inttypes.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
@@ -24,7 +25,7 @@
 #include "http_stream.h"
 #include "i2s_stream.h"
 #include "equalizer.h"
-
+#include "../http_stream_streaming_patch.h"
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "driver/gpio.h"
@@ -113,6 +114,15 @@ static const char *sample_streams[] = {
 
 // Application tag for logging
 static const char *TAG = "HTTP_AUTO_DECODER_EXAMPLE";
+
+// Buffer monitoring configuration
+#define BUFFER_LOG_INTERVAL_MS 10000  // Log buffer status every 10 seconds (reduced frequency)
+static TimerHandle_t buffer_monitor_timer = NULL;
+
+// Forward declarations for buffer monitoring functions
+static void log_buffer_status(void);
+static void start_buffer_monitoring(void);
+static void stop_buffer_monitoring(void);
 
 // Audio format detection based on URL extension and content-type
 static audio_format_t detect_audio_format_from_url(const char* url)
@@ -800,10 +810,12 @@ static esp_err_t set_led_color_handler(httpd_req_t *req)
 
 static esp_err_t status_handler(httpd_req_t *req)
 {
-    char status_json[1024];
+    char status_json[2048];  // Increased size for more detailed buffer info
     
     // Get current buffer status with detailed information
     int http_filled = 0, decoder_filled = 0, http_total = 0, decoder_total = 0;
+    int eq_filled = 0, i2s_filled = 0;
+    
     if (global_http_stream && global_decoder) {
         http_filled = audio_element_get_output_ringbuf_size(global_http_stream);
         decoder_filled = audio_element_get_output_ringbuf_size(global_decoder);
@@ -813,18 +825,44 @@ static esp_err_t status_handler(httpd_req_t *req)
         audio_element_info_t decoder_info = {0};
         audio_element_getinfo(global_http_stream, &http_info);
         audio_element_getinfo(global_decoder, &decoder_info);
-        http_total = http_info.total_bytes;
-         
-        decoder_total = decoder_info.total_bytes;
+        http_total = 1024 * 1024;  // Our configured 1MB HTTP buffer
+        
+        // Set decoder total based on format
+        switch (current_audio_format) {
+            case AUDIO_FORMAT_AAC:  decoder_total = 2 * 1024 * 1024; break;  // 2MB
+            case AUDIO_FORMAT_FLAC: decoder_total = 1024 * 1024; break;      // 1MB
+            case AUDIO_FORMAT_MP3:  decoder_total = 512 * 1024; break;       // 512KB
+            case AUDIO_FORMAT_WAV:  decoder_total = 256 * 1024; break;       // 256KB
+            case AUDIO_FORMAT_OGG:  decoder_total = 512 * 1024; break;       // 512KB
+            default: decoder_total = 512 * 1024; break;
+        }
+        
+        // Get equalizer and I2S buffer status
+        if (global_equalizer) {
+            eq_filled = audio_element_get_output_ringbuf_size(global_equalizer);
+        }
+        if (global_i2s_stream) {
+            i2s_filled = audio_element_get_output_ringbuf_size(global_i2s_stream);
+        }
     }
     
     // Get memory status
     size_t free_heap = esp_get_free_heap_size();
     size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    size_t min_free_heap = esp_get_minimum_free_heap_size();
     
     // Calculate buffer fill percentages
     int http_percent = (http_total > 0) ? (http_filled * 100 / http_total) : 0;
     int decoder_percent = (decoder_total > 0) ? (decoder_filled * 100 / decoder_total) : 0;
+    
+    // Determine buffer health status
+    const char* buffer_health = "healthy";
+    if (http_percent < 10 || http_percent > 95 || decoder_percent > 90 || free_heap < 50*1024) {
+        buffer_health = "warning";
+    }
+    if (free_heap < 25*1024) {
+        buffer_health = "critical";
+    }
     
     snprintf(status_json, sizeof(status_json),
         "{"
@@ -832,11 +870,17 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"decoder\":\"%s\","
         "\"volume\":%d,"
         "\"http_buffer_kb\":%d,"
+        "\"http_buffer_total_kb\":%d,"
         "\"http_buffer_percent\":%d,"
         "\"decoder_buffer_kb\":%d,"
+        "\"decoder_buffer_total_kb\":%d,"
         "\"decoder_buffer_percent\":%d,"
-        "\"free_heap\":%zu,"
-        "\"free_psram\":%zu,"
+        "\"equalizer_buffer_kb\":%d,"
+        "\"i2s_buffer_kb\":%d,"
+        "\"free_heap_kb\":%zu,"
+        "\"free_psram_kb\":%zu,"
+        "\"min_free_heap_kb\":%zu,"
+        "\"buffer_health\":\"%s\","
         "\"pipeline_running\":%s"
         "}",
         current_stream_url,
@@ -844,16 +888,61 @@ static esp_err_t status_handler(httpd_req_t *req)
         current_volume,
         http_filled / 1024,
         http_total / 1024,
+        http_percent,
         decoder_filled / 1024,
+        decoder_total / 1024,
         decoder_percent,
-        free_heap,
-        free_psram,
+        eq_filled / 1024,
+        i2s_filled / 1024,
+        free_heap / 1024,
+        free_psram / 1024,
+        min_free_heap / 1024,
+        buffer_health,
         global_pipeline ? "true" : "false"
     );
        
     
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, status_json, strlen(status_json));
+    return ESP_OK;
+}
+
+static esp_err_t buffer_status_handler(httpd_req_t *req)
+{
+    ESP_LOGI("HTTP_SERVER", "📊 Manual buffer status request received");
+    
+    // Log detailed buffer status only when manually requested (not in timer)
+    // This avoids stack overflow in timer service task
+    if (!global_pipeline || !global_http_stream || !global_decoder) {
+        httpd_resp_send(req, "Pipeline not initialized", 24);
+        return ESP_OK;
+    }
+    
+    // Get buffer information
+    int http_filled = audio_element_get_output_ringbuf_size(global_http_stream);
+    int decoder_filled = audio_element_get_output_ringbuf_size(global_decoder);
+    size_t free_heap = esp_get_free_heap_size();
+    size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    
+    // Calculate percentages
+    int http_percent = (http_filled * 100) / (1024 * 1024);  // 1MB buffer
+    int decoder_total = 0;
+    switch (current_audio_format) {
+        case AUDIO_FORMAT_AAC:  decoder_total = 2048; break;
+        case AUDIO_FORMAT_FLAC: decoder_total = 1024; break;
+        default: decoder_total = 512; break;
+    }
+    int decoder_percent = (decoder_filled * 100) / (decoder_total * 1024);
+    
+    ESP_LOGI("BUFFER_MONITOR", "=== DETAILED BUFFER STATUS ===");
+    ESP_LOGI("BUFFER_MONITOR", "Stream: %s | Format: %s", current_stream_url, current_decoder_name);
+    ESP_LOGI("BUFFER_MONITOR", "HTTP: %d KB (%d%%) | Decoder: %d KB (%d%%)", 
+             http_filled/1024, http_percent, decoder_filled/1024, decoder_percent);
+    ESP_LOGI("BUFFER_MONITOR", "Memory: Heap=%zu KB | PSRAM=%zu KB", free_heap/1024, free_psram/1024);
+    ESP_LOGI("BUFFER_MONITOR", "===============================");
+    
+    // Return simple response
+    httpd_resp_send(req, "Detailed buffer status logged to console", 41);
     return ESP_OK;
 }
 
@@ -929,6 +1018,15 @@ static httpd_handle_t start_webserver(void)
         };
         httpd_register_uri_handler(server, &status_uri);
         
+        // Buffer Status API
+        httpd_uri_t buffer_status_uri = {
+            .uri = "/buffer_status",
+            .method = HTTP_GET,
+            .handler = buffer_status_handler,
+            .user_ctx = NULL
+        };
+        httpd_register_uri_handler(server, &buffer_status_uri);
+        
         ESP_LOGI("HTTP_SERVER", "✅ HTTP server started successfully");
         return server;
     }
@@ -971,7 +1069,7 @@ static void start_audio_pipeline(const char* url)
     
     // Create HTTP stream optimized for high-resolution streaming
     http_stream_cfg_t http_cfg = HTTP_STREAM_CFG_DEFAULT();
-    http_cfg.out_rb_size = 1024 * 1024;  // 2MB buffer for high-bitrate streams
+    http_cfg.out_rb_size =1024 * 1024;  // 2MB buffer for high-bitrate streams
     http_cfg.task_stack = 4096 * 12;  // Larger stack for high-bandwidth streams
     http_cfg.task_prio = 12;      // High priority for streaming
     http_cfg.task_core = 1;      // Pin to core 1
@@ -1087,7 +1185,11 @@ static void start_audio_pipeline(const char* url)
     // Update LED for new stream
     update_led_for_stream(url, true);
     
+    // Start buffer monitoring for this stream (disabled to prevent stack overflow)
+    // start_buffer_monitoring();
+    
     ESP_LOGI("AUDIO_PLAYER", "✅ Audio pipeline started successfully");
+    ESP_LOGI("AUDIO_PLAYER", "💡 Use /buffer_status endpoint for manual buffer monitoring");
     return;
 
 cleanup_i2s:
@@ -1183,6 +1285,197 @@ static void update_pipeline_equalizer(void)
     }
 }
 
+// Comprehensive buffer monitoring function - logs all buffer states
+static void log_buffer_status(void)
+{
+    if (!global_pipeline || !global_http_stream || !global_decoder) {
+        ESP_LOGW("BUFFER_MONITOR", "⚠️ Pipeline not fully initialized for buffer monitoring");
+        return;
+    }
+    
+    // === HTTP Stream Buffer Analysis ===
+    int http_output_filled = 0;
+    audio_element_info_t http_info = {0};
+    
+    if (global_http_stream) {
+        // Get HTTP stream ring buffer status (output buffer - data ready for decoder)
+        http_output_filled = audio_element_get_output_ringbuf_size(global_http_stream);
+        
+        // Get HTTP stream element info for total buffer sizes
+        audio_element_getinfo(global_http_stream, &http_info);
+    }
+    
+    // === Decoder Buffer Analysis ===
+    int decoder_output_filled = 0;
+    audio_element_info_t decoder_info = {0};
+    
+    if (global_decoder) {
+        // Get decoder ring buffer status
+        decoder_output_filled = audio_element_get_output_ringbuf_size(global_decoder);
+        
+        // Get decoder element info
+        audio_element_getinfo(global_decoder, &decoder_info);
+    }
+    
+    // === Equalizer Buffer Analysis ===
+    int eq_output_filled = 0;
+    audio_element_info_t eq_info = {0};
+    
+    if (global_equalizer) {
+        eq_output_filled = audio_element_get_output_ringbuf_size(global_equalizer);
+        audio_element_getinfo(global_equalizer, &eq_info);
+    }
+    
+    // === I2S Stream Buffer Analysis ===
+    audio_element_info_t i2s_info = {0};
+    
+    if (global_i2s_stream) {
+        audio_element_getinfo(global_i2s_stream, &i2s_info);
+    }
+    
+    // === Memory Status ===
+    size_t free_heap = esp_get_free_heap_size();
+    size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    size_t min_free_heap = esp_get_minimum_free_heap_size();
+    
+    // === Calculate Buffer Utilization Percentages ===
+    // HTTP stream configured buffer size from our config
+    int http_total_kb = 1024;  // 1MB configured buffer size
+    int http_output_percent = (http_total_kb > 0) ? (http_output_filled * 100 / (http_total_kb * 1024)) : 0;
+    
+    // Decoder buffer sizes (varies by format)
+    int decoder_total_kb = 0;
+    switch (current_audio_format) {
+        case AUDIO_FORMAT_AAC:  decoder_total_kb = 2048; break;  // 2MB for AAC
+        case AUDIO_FORMAT_FLAC: decoder_total_kb = 1024; break;  // 1MB for FLAC
+        case AUDIO_FORMAT_MP3:  decoder_total_kb = 512; break;   // 512KB for MP3
+        case AUDIO_FORMAT_WAV:  decoder_total_kb = 256; break;   // 256KB for WAV
+        case AUDIO_FORMAT_OGG:  decoder_total_kb = 512; break;   // 512KB for OGG
+        default: decoder_total_kb = 512; break;
+    }
+    int decoder_output_percent = (decoder_total_kb > 0) ? (decoder_output_filled * 100 / (decoder_total_kb * 1024)) : 0;
+    
+    // === Stream Position and Bitrate Calculation ===
+    uint64_t bytes_processed = http_info.byte_pos;
+    uint32_t duration_sec = (http_info.duration > 0) ? http_info.duration / 1000 : 0;
+    uint32_t estimated_bitrate = 0;
+    
+    // Estimate current bitrate if we have position data
+    if (bytes_processed > 0 && duration_sec > 0) {
+        estimated_bitrate = (bytes_processed * 8) / duration_sec;  // bits per second
+    }
+    
+    // === Comprehensive Buffer Status Logging ===
+    ESP_LOGI("BUFFER_MONITOR", "================== BUFFER STATUS REPORT ==================");
+    ESP_LOGI("BUFFER_MONITOR", "🎵 Stream: %s | Format: %s | Volume: %d%%", 
+             current_stream_url, current_decoder_name, current_volume);
+    
+    if (estimated_bitrate > 0) {
+        ESP_LOGI("BUFFER_MONITOR", "📊 Bitrate: %" PRIu32 " bps (%.1f kbps) | Processed: %llu bytes", 
+                 estimated_bitrate, estimated_bitrate / 1000.0f, bytes_processed);
+    }
+    
+    ESP_LOGI("BUFFER_MONITOR", "📡 HTTP Buffer: %d KB used (%d%%) | Total: %d KB", 
+             http_output_filled / 1024, http_output_percent, http_total_kb);
+    
+    ESP_LOGI("BUFFER_MONITOR", "🎧 %s Decoder: Out=%d KB (%d%%) | Total: %d KB", 
+             current_decoder_name, 
+             decoder_output_filled / 1024, decoder_output_percent, decoder_total_kb);
+    
+    ESP_LOGI("BUFFER_MONITOR", "🎛️ Equalizer: Out=%d KB", 
+             eq_output_filled / 1024);
+    
+    ESP_LOGI("BUFFER_MONITOR", "🔊 I2S Stream: Buffer status available");
+    
+    ESP_LOGI("BUFFER_MONITOR", "💾 Memory: Free Heap=%zu KB | Free PSRAM=%zu KB | Min Free=%zu KB", 
+             free_heap / 1024, free_psram / 1024, min_free_heap / 1024);
+    
+    // === Buffer Health Analysis ===
+    bool buffer_healthy = true;
+    
+    if (http_output_percent < 10) {
+        ESP_LOGW("BUFFER_MONITOR", "⚠️ HTTP buffer running low (%d%%) - network issue?", http_output_percent);
+        buffer_healthy = false;
+    }
+    
+    if (http_output_percent > 95) {
+        ESP_LOGW("BUFFER_MONITOR", "⚠️ HTTP buffer nearly full (%d%%) - decoder bottleneck?", http_output_percent);
+        buffer_healthy = false;
+    }
+    
+    if (decoder_output_percent > 90) {
+        ESP_LOGW("BUFFER_MONITOR", "⚠️ Decoder buffer nearly full (%d%%) - I2S bottleneck?", decoder_output_percent);
+        buffer_healthy = false;
+    }
+    
+    if (free_heap < 50 * 1024) {  // Less than 50KB free heap
+        ESP_LOGE("BUFFER_MONITOR", "❌ Critical: Low heap memory (%zu KB)", free_heap / 1024);
+        buffer_healthy = false;
+    }
+    
+    if (buffer_healthy) {
+        ESP_LOGI("BUFFER_MONITOR", "✅ Buffer status: HEALTHY");
+    }
+    
+    ESP_LOGI("BUFFER_MONITOR", "========================================================");
+}
+
+// Timer callback for periodic buffer monitoring (lightweight version)
+static void buffer_monitor_timer_callback(TimerHandle_t xTimer)
+{
+    // Use minimal stack - just basic buffer status
+    if (!global_pipeline || !global_http_stream || !global_decoder) {
+        return;
+    }
+    
+    // Simple buffer check with minimal stack usage
+    int http_filled = audio_element_get_output_ringbuf_size(global_http_stream);
+    int decoder_filled = audio_element_get_output_ringbuf_size(global_decoder);
+    size_t free_heap = esp_get_free_heap_size();
+    
+    // Simple logging to avoid stack overflow
+    ESP_LOGI("BUFFER", "HTTP:%dKB Decoder:%dKB Heap:%zuKB", 
+             http_filled/1024, decoder_filled/1024, free_heap/1024);
+    
+    // Only warn on critical issues
+    if (free_heap < 30*1024) {
+        ESP_LOGW("BUFFER", "Low heap: %zu KB", free_heap/1024);
+    }
+}
+
+// Start buffer monitoring timer
+static void start_buffer_monitoring(void)
+{
+    if (buffer_monitor_timer == NULL) {
+        buffer_monitor_timer = xTimerCreate(
+            "buffer_monitor",                    // Timer name
+            pdMS_TO_TICKS(BUFFER_LOG_INTERVAL_MS),  // Timer period (5 seconds)
+            pdTRUE,                             // Auto-reload timer
+            NULL,                               // Timer ID (not used)
+            buffer_monitor_timer_callback       // Callback function
+        );
+        
+        if (buffer_monitor_timer != NULL) {
+            if (xTimerStart(buffer_monitor_timer, 0) == pdPASS) {
+                ESP_LOGI("BUFFER_MONITOR", "✅ Buffer monitoring started (interval: %d ms)", BUFFER_LOG_INTERVAL_MS);
+            } else {
+                ESP_LOGE("BUFFER_MONITOR", "❌ Failed to start buffer monitoring timer");
+            }
+        } else {
+            ESP_LOGE("BUFFER_MONITOR", "❌ Failed to create buffer monitoring timer");
+        }
+    }
+}
+
+// Stop buffer monitoring timer
+static void stop_buffer_monitoring(void)
+{
+    if (buffer_monitor_timer != NULL) {
+        xTimerStop(buffer_monitor_timer, 0);
+        ESP_LOGI("BUFFER_MONITOR", "🛑 Buffer monitoring stopped");
+    }
+}
+
 void app_main(void)
 {
     esp_log_level_set("*", ESP_LOG_WARN);
@@ -1190,6 +1483,7 @@ void app_main(void)
     esp_log_level_set("wifi_idf", ESP_LOG_INFO);
     esp_log_level_set("HTTP_SERVER", ESP_LOG_INFO);
     esp_log_level_set("AUDIO_PLAYER", ESP_LOG_INFO);
+    esp_log_level_set("BUFFER_MONITOR", ESP_LOG_INFO);  // Enable buffer monitoring logs
 
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -1294,6 +1588,9 @@ void app_main(void)
             if (change_requested) {
                 ESP_LOGI("AUDIO_PLAYER", "🔄 Changing stream to: %s", new_url);
                 pipeline_restarting = true;
+                
+                // Stop buffer monitoring during pipeline restart (disabled to prevent stack overflow)
+                // stop_buffer_monitoring();
                 
                 // Stop current pipeline if running - proper cleanup sequence
                 if (global_pipeline) {
