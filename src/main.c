@@ -976,8 +976,8 @@ static void start_audio_pipeline(const char* url)
     http_cfg.task_prio = 12;      // High priority for streaming
     http_cfg.task_core = 1;      // Pin to core 1
     http_cfg.enable_playlist_parser = true;          // Enable playlist parser
-    http_cfg.request_size = 0;  // 256KB HTTP request chunks (optimal for AAC)
-    http_cfg.request_range_size = 0;  // 512KB range requests
+    http_cfg.request_size = 0;   
+    http_cfg.request_range_size = 0;  
     http_cfg.auto_connect_next_track = true;  // Auto-reconnect for streaming
     global_http_stream = http_stream_init(&http_cfg);
     if (!global_http_stream) {
@@ -1005,7 +1005,7 @@ static void start_audio_pipeline(const char* url)
     // Create gain array - 10 bands for equalizer (ESP-ADF supports 10 bands total)
     static int eq_gain[10] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};  // Start with flat response
     eq_cfg.set_gain = eq_gain;
-    eq_cfg.task_stack = 4096 * 36;  // Increase stack size
+    eq_cfg.task_stack = 4096 * 6;  // Increase stack size
     eq_cfg.task_prio = 5;      // Set priority
     eq_cfg.task_core = 1;      // Pin to core 1
     global_equalizer = equalizer_init(&eq_cfg);
@@ -1018,7 +1018,7 @@ static void start_audio_pipeline(const char* url)
     // Create I2S stream optimized for high-resolution audio
     i2s_stream_cfg_t i2s_cfg = I2S_STREAM_CFG_DEFAULT();
     i2s_cfg.type = AUDIO_STREAM_WRITER;
-    i2s_cfg.buffer_len = 1024 * 48;  // Larger buffer for high-res audio (128KB)
+    i2s_cfg.buffer_len = 1024 * 36;  // Larger buffer for high-res audio (128KB)
     i2s_cfg.use_alc = true;  // Enable ALC for volume control
     i2s_cfg.task_stack = 4096 * 4;  // Larger stack for I2S stream
     // High-resolution I2S configuration for FLAC and other lossless formats
