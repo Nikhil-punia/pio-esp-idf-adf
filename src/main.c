@@ -103,10 +103,12 @@ static bool led_change_requested = false;
 
 // Sample stream URLs for different formats
 static const char *sample_streams[] = {
-    "https://stream.radioparadise.com/flac",           // FLAC stream
+    "https://stream.radioparadise.com/flac",           // FLAC stream (high quality)
     "https://stream.zeno.fm/vq6p5vxb4v8uv",           // MP3 radio stream
-    "https://dl.espressif.com/dl/audio/ff-16b-2c-44100hz.aac", // AAC file
+    "https://dl.espressif.com/dl/audio/ff-16b-2c-44100hz.aac", // AAC file (standard)
+    "https://stream.rcs.revma.com/ypqt40u0x1zuv",     // High-bitrate AAC stream
     "https://dl.espressif.com/dl/audio/ff-16b-2c-44100hz.wav", // WAV file
+    "https://ice1.somafm.com/groovesalad-256-aac",    // 256kbps AAC stream
 };
 
 // Application tag for logging
@@ -187,17 +189,17 @@ static audio_element_handle_t create_decoder_for_format(audio_format_t format)
         }
         case AUDIO_FORMAT_AAC: {
             aac_decoder_cfg_t aac_cfg = DEFAULT_AAC_DECODER_CONFIG();
-            aac_cfg.out_rb_size = 512 * 1024;
-            aac_cfg.task_stack = 4096 * 3;  // Increase stack size
-            aac_cfg.task_prio = 5;      // Set priority
+            aac_cfg.out_rb_size = 2 * 1024 * 1024;  // 2MB buffer for high-bitrate AAC
+            aac_cfg.task_stack = 4096 * 6;  // Large stack for complex AAC decoding
+            aac_cfg.task_prio = 6;      // Higher priority for AAC
             aac_cfg.task_core = 1;      // Pin to core 1
             decoder = aac_decoder_init(&aac_cfg);
             break;
         }
         case AUDIO_FORMAT_FLAC: {
             flac_decoder_cfg_t flac_cfg = DEFAULT_FLAC_DECODER_CONFIG();
-            flac_cfg.out_rb_size = 512 * 1024;  // FLAC needs more buffer
-            flac_cfg.task_stack = 1024 * 18;  // FLAC needs even more stack
+            flac_cfg.out_rb_size = 1024 * 1024;  // FLAC needs more buffer
+            flac_cfg.task_stack = 1024 * 32;  // FLAC needs even more stack
             flac_cfg.task_prio = 5;      // Set priority
             flac_cfg.task_core = 1;      // Pin to core 1
             decoder = flac_decoder_init(&flac_cfg);
@@ -800,16 +802,29 @@ static esp_err_t status_handler(httpd_req_t *req)
 {
     char status_json[1024];
     
-    // Get current buffer status
-    int http_filled = 0, decoder_filled = 0;
+    // Get current buffer status with detailed information
+    int http_filled = 0, decoder_filled = 0, http_total = 0, decoder_total = 0;
     if (global_http_stream && global_decoder) {
         http_filled = audio_element_get_output_ringbuf_size(global_http_stream);
         decoder_filled = audio_element_get_output_ringbuf_size(global_decoder);
+        
+        // Get total buffer sizes for percentage calculation
+        audio_element_info_t http_info = {0};
+        audio_element_info_t decoder_info = {0};
+        audio_element_getinfo(global_http_stream, &http_info);
+        audio_element_getinfo(global_decoder, &decoder_info);
+        http_total = http_info.total_bytes;
+         
+        decoder_total = decoder_info.total_bytes;
     }
     
     // Get memory status
     size_t free_heap = esp_get_free_heap_size();
     size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    
+    // Calculate buffer fill percentages
+    int http_percent = (http_total > 0) ? (http_filled * 100 / http_total) : 0;
+    int decoder_percent = (decoder_total > 0) ? (decoder_filled * 100 / decoder_total) : 0;
     
     snprintf(status_json, sizeof(status_json),
         "{"
@@ -817,7 +832,9 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"decoder\":\"%s\","
         "\"volume\":%d,"
         "\"http_buffer_kb\":%d,"
+        "\"http_buffer_percent\":%d,"
         "\"decoder_buffer_kb\":%d,"
+        "\"decoder_buffer_percent\":%d,"
         "\"free_heap\":%zu,"
         "\"free_psram\":%zu,"
         "\"pipeline_running\":%s"
@@ -826,11 +843,14 @@ static esp_err_t status_handler(httpd_req_t *req)
         current_decoder_name,
         current_volume,
         http_filled / 1024,
+        http_total / 1024,
         decoder_filled / 1024,
+        decoder_percent,
         free_heap,
         free_psram,
         global_pipeline ? "true" : "false"
     );
+       
     
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, status_json, strlen(status_json));
@@ -951,13 +971,14 @@ static void start_audio_pipeline(const char* url)
     
     // Create HTTP stream optimized for high-resolution streaming
     http_stream_cfg_t http_cfg = HTTP_STREAM_CFG_DEFAULT();
-    http_cfg.out_rb_size = 1024 * 1024;  // 1MB buffer for high-res streams
-    http_cfg.task_stack = 4096 * 8;  // Larger stack for high-bandwidth streams
-    http_cfg.task_prio = 10;      // Set priority
+    http_cfg.out_rb_size = 1024 * 1024;  // 2MB buffer for high-bitrate streams
+    http_cfg.task_stack = 4096 * 12;  // Larger stack for high-bandwidth streams
+    http_cfg.task_prio = 12;      // High priority for streaming
     http_cfg.task_core = 1;      // Pin to core 1
     http_cfg.enable_playlist_parser = true;          // Enable playlist parser
-    http_cfg.request_size = 1024 * 128;  // Larger HTTP request chunks (128KB)
-    http_cfg.request_range_size = 1024 * 256;  // 256KB range requests
+    http_cfg.request_size = 0;  // 256KB HTTP request chunks (optimal for AAC)
+    http_cfg.request_range_size = 0;  // 512KB range requests
+    http_cfg.auto_connect_next_track = true;  // Auto-reconnect for streaming
     global_http_stream = http_stream_init(&http_cfg);
     if (!global_http_stream) {
         ESP_LOGE("AUDIO_PLAYER", "Failed to create HTTP stream");
@@ -984,7 +1005,7 @@ static void start_audio_pipeline(const char* url)
     // Create gain array - 10 bands for equalizer (ESP-ADF supports 10 bands total)
     static int eq_gain[10] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};  // Start with flat response
     eq_cfg.set_gain = eq_gain;
-    eq_cfg.task_stack = 4096;  // Increase stack size
+    eq_cfg.task_stack = 4096 * 36;  // Increase stack size
     eq_cfg.task_prio = 5;      // Set priority
     eq_cfg.task_core = 1;      // Pin to core 1
     global_equalizer = equalizer_init(&eq_cfg);
@@ -997,9 +1018,9 @@ static void start_audio_pipeline(const char* url)
     // Create I2S stream optimized for high-resolution audio
     i2s_stream_cfg_t i2s_cfg = I2S_STREAM_CFG_DEFAULT();
     i2s_cfg.type = AUDIO_STREAM_WRITER;
-    i2s_cfg.buffer_len = 1024 * 24;  // Larger buffer for high-res audio (24KB)
+    i2s_cfg.buffer_len = 1024 * 48;  // Larger buffer for high-res audio (128KB)
     i2s_cfg.use_alc = true;  // Enable ALC for volume control
-    
+    i2s_cfg.task_stack = 4096 * 4;  // Larger stack for I2S stream
     // High-resolution I2S configuration for FLAC and other lossless formats
     // Support up to 192kHz/32-bit audio
     i2s_cfg.chan_cfg.dma_desc_num = 8;   // More DMA buffers for smoother playback

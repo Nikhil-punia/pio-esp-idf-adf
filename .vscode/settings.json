@@ -4,6 +4,9 @@
     "esp_log.h": "c",
     "mp3_decoder.h": "c",
     "i2s_stream.h": "c",
-    "wav_decoder.h": "c"
+    "wav_decoder.h": "c",
+    "http_stream.h": "c",
+    "audio_common.h": "c",
+    "equalizer.h": "c"
   }
 }
