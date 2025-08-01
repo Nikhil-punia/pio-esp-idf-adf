@@ -1081,7 +1081,7 @@ static void start_audio_pipeline(const char* url)
     
     // Create HTTP stream optimized for high-resolution streaming
     http_stream_cfg_t http_cfg = HTTP_STREAM_CFG_DEFAULT();
-    http_cfg.out_rb_size = 2 * 1024 * 1024;  // 2MB buffer for FLAC streaming
+    http_cfg.out_rb_size = 1 * 1024 * 1024;  // 2MB buffer for FLAC streaming
     http_cfg.task_stack = 4096 * 12;  // Larger stack for high-bandwidth streams
     http_cfg.task_prio = 12;      // High priority for streaming
     http_cfg.task_core = 1;      // Pin to core 1
