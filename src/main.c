@@ -104,10 +104,10 @@ static bool led_change_requested = false;
 
 // Sample stream URLs for different formats
 static const char *sample_streams[] = {
-    "https://stream.radioparadise.com/flac",           // FLAC stream (high quality)
+    "https://dl.espressif.com/dl/audio/ff-16b-2c-44100hz.flac", // FLAC file (tested by ESP-ADF)
     "https://stream.zeno.fm/vq6p5vxb4v8uv",           // MP3 radio stream
     "https://dl.espressif.com/dl/audio/ff-16b-2c-44100hz.aac", // AAC file (standard)
-    "https://stream.rcs.revma.com/ypqt40u0x1zuv",     // High-bitrate AAC stream
+    "https://stream.radioparadise.com/aac-320",        // Radio Paradise AAC 320kbps (reliable)
     "https://dl.espressif.com/dl/audio/ff-16b-2c-44100hz.wav", // WAV file
     "https://ice1.somafm.com/groovesalad-256-aac",    // 256kbps AAC stream
 };
@@ -155,7 +155,14 @@ static audio_format_t detect_audio_format_from_url(const char* url)
     } else {
         // Try to guess from known streaming services
         if (strstr(url_lower, "radioparadise.com")) {
-            format = AUDIO_FORMAT_FLAC;  // Radio Paradise typically streams FLAC
+            // Radio Paradise has both AAC and FLAC streams
+            if (strstr(url_lower, "flac")) {
+                format = AUDIO_FORMAT_FLAC;  // Radio Paradise FLAC stream
+            } else if (strstr(url_lower, "aac") || strstr(url_lower, "320")) {
+                format = AUDIO_FORMAT_AAC;   // Radio Paradise AAC streams
+            } else {
+                format = AUDIO_FORMAT_AAC;   // Default to AAC for Radio Paradise
+            }
         } else if (strstr(url_lower, "zeno.fm") || strstr(url_lower, "icecast") || 
                    strstr(url_lower, "shoutcast") || strstr(url_lower, "radio")) {
             format = AUDIO_FORMAT_MP3;   // Most internet radio is MP3
@@ -208,10 +215,11 @@ static audio_element_handle_t create_decoder_for_format(audio_format_t format)
         }
         case AUDIO_FORMAT_FLAC: {
             flac_decoder_cfg_t flac_cfg = DEFAULT_FLAC_DECODER_CONFIG();
-            flac_cfg.out_rb_size = 1024 * 1024;  // FLAC needs more buffer
-            flac_cfg.task_stack = 1024 * 32;  // FLAC needs even more stack
-            flac_cfg.task_prio = 5;      // Set priority
-            flac_cfg.task_core = 1;      // Pin to core 1
+            flac_cfg.out_rb_size = 1024 * 1024;     // Increase to 1MB for streaming FLAC
+            flac_cfg.task_stack = 1024 * 24;        // Increase stack for streaming
+            flac_cfg.task_prio = 6;                 // Higher priority for FLAC streaming
+            flac_cfg.task_core = 1;                 // Pin to core 1
+            flac_cfg.stack_in_ext = true;           // Use external memory for stack
             decoder = flac_decoder_init(&flac_cfg);
             break;
         }
@@ -497,10 +505,14 @@ static esp_err_t root_handler(httpd_req_t *req)
         "</form>"
         "<h3>Quick Presets (Auto-Detected Format):</h3>"
         "<div class='presets'>"
-        "<div class='preset' onclick='setStream(\"https://stream.radioparadise.com/flac\")'> FLAC Stream<br><small>Radio Paradise (High Quality)</small></div>"
+        "<div class='preset' onclick='setStream(\"https://stream.radioparadise.com/aac-320\")'> Radio Paradise AAC<br><small>320kbps High Quality</small></div>"
         "<div class='preset' onclick='setStream(\"https://stream.zeno.fm/vq6p5vxb4v8uv\")'> MP3 Radio<br><small>Zeno.fm Stream</small></div>"
         "<div class='preset' onclick='setStream(\"https://dl.espressif.com/dl/audio/ff-16b-2c-44100hz.aac\")'> AAC File<br><small>Espressif Sample</small></div>"
         "<div class='preset' onclick='setStream(\"https://dl.espressif.com/dl/audio/ff-16b-2c-44100hz.wav\")'> WAV File<br><small>Espressif Sample</small></div>"
+        "<div class='preset' onclick='setStream(\"https://dl.espressif.com/dl/audio/ff-16b-2c-44100hz.flac\")'> FLAC File<br><small>Espressif Sample</small></div>"
+        "<div class='preset' onclick='setStream(\"https://stream.radioparadise.com/flac\")'> Radio Paradise FLAC<br><small>High Quality Stream</small></div>"
+        "<div class='preset' onclick='setStream(\"https://ice1.somafm.com/groovesalad-256-aac\")'> SomaFM AAC<br><small>256kbps Ambient</small></div>"
+        "<div class='preset' onclick='setStream(\"https://stream.rcs.revma.com/ypqt40u0x1zuv\")'> High Bitrate AAC<br><small>Test Stream</small></div>"
         "</div>"
         "<div style='text-align:center;margin-top:30px;color:#666;'>"
         "<p> ESP32-S3 with 8MB PSRAM |  Auto-Decoder Selection |  WiFi Streaming</p>"
@@ -825,7 +837,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         audio_element_info_t decoder_info = {0};
         audio_element_getinfo(global_http_stream, &http_info);
         audio_element_getinfo(global_decoder, &decoder_info);
-        http_total = 1024 * 1024;  // Our configured 1MB HTTP buffer
+        http_total = 2 * 1024 * 1024;  // Our configured 2MB HTTP buffer for FLAC
         
         // Set decoder total based on format
         switch (current_audio_format) {
@@ -925,7 +937,7 @@ static esp_err_t buffer_status_handler(httpd_req_t *req)
     size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     
     // Calculate percentages
-    int http_percent = (http_filled * 100) / (1024 * 1024);  // 1MB buffer
+    int http_percent = (http_filled * 100) / (2 * 1024 * 1024);  // 2MB buffer
     int decoder_total = 0;
     switch (current_audio_format) {
         case AUDIO_FORMAT_AAC:  decoder_total = 2048; break;
@@ -1069,7 +1081,7 @@ static void start_audio_pipeline(const char* url)
     
     // Create HTTP stream optimized for high-resolution streaming
     http_stream_cfg_t http_cfg = HTTP_STREAM_CFG_DEFAULT();
-    http_cfg.out_rb_size =1024 * 1024;  // 2MB buffer for high-bitrate streams
+    http_cfg.out_rb_size = 2 * 1024 * 1024;  // 2MB buffer for FLAC streaming
     http_cfg.task_stack = 4096 * 12;  // Larger stack for high-bandwidth streams
     http_cfg.task_prio = 12;      // High priority for streaming
     http_cfg.task_core = 1;      // Pin to core 1
@@ -1340,7 +1352,7 @@ static void log_buffer_status(void)
     
     // === Calculate Buffer Utilization Percentages ===
     // HTTP stream configured buffer size from our config
-    int http_total_kb = 1024;  // 1MB configured buffer size
+    int http_total_kb = 2048;  // 2MB configured buffer size
     int http_output_percent = (http_total_kb > 0) ? (http_output_filled * 100 / (http_total_kb * 1024)) : 0;
     
     // Decoder buffer sizes (varies by format)
@@ -1666,9 +1678,13 @@ void app_main(void)
             // Monitor pipeline status
             if (global_pipeline) {
                 audio_event_iface_msg_t msg;
-                esp_err_t ret = audio_event_iface_listen(evt, &msg, pdMS_TO_TICKS(1000));
+                esp_err_t ret = audio_event_iface_listen(evt, &msg, pdMS_TO_TICKS(100));
                 
                 if (ret == ESP_OK) {
+                    // Log all important events for debugging
+                    ESP_LOGI("AUDIO_EVENT", "Event: src=%p cmd=%d data=%d source_type=%d", 
+                             msg.source, (int)msg.cmd, (int)msg.data, (int)msg.source_type);
+                    
                     // Handle music info events for automatic I2S configuration
                     if (msg.source_type == AUDIO_ELEMENT_TYPE_ELEMENT 
                         && msg.cmd == AEL_MSG_CMD_REPORT_MUSIC_INFO) {
