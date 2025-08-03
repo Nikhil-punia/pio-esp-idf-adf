@@ -7,6 +7,7 @@
     "wav_decoder.h": "c",
     "http_stream.h": "c",
     "audio_common.h": "c",
-    "equalizer.h": "c"
+    "equalizer.h": "c",
+    "freertos.h": "c"
   }
 }

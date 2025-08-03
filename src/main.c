@@ -25,7 +25,6 @@
 #include "http_stream.h"
 #include "i2s_stream.h"
 #include "equalizer.h"
-#include "../http_stream_streaming_patch.h"
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "driver/gpio.h"
@@ -215,9 +214,9 @@ static audio_element_handle_t create_decoder_for_format(audio_format_t format)
         }
         case AUDIO_FORMAT_FLAC: {
             flac_decoder_cfg_t flac_cfg = DEFAULT_FLAC_DECODER_CONFIG();
-            flac_cfg.out_rb_size = 1024 * 1024;     // Increase to 1MB for streaming FLAC
-            flac_cfg.task_stack = 1024 * 24;        // Increase stack for streaming
-            flac_cfg.task_prio = 6;                 // Higher priority for FLAC streaming
+            flac_cfg.out_rb_size = 128 * 1024;      // Reduce to 128KB for faster start
+            flac_cfg.task_stack = 1024 * 20;        // Reduce stack size
+            flac_cfg.task_prio = 5;                 // Lower priority 
             flac_cfg.task_core = 1;                 // Pin to core 1
             flac_cfg.stack_in_ext = true;           // Use external memory for stack
             decoder = flac_decoder_init(&flac_cfg);
@@ -1079,16 +1078,16 @@ static void start_audio_pipeline(const char* url)
         return;
     }
     
-    // Create HTTP stream optimized for high-resolution streaming
+    // Create HTTP stream optimized for low-latency streaming
     http_stream_cfg_t http_cfg = HTTP_STREAM_CFG_DEFAULT();
-    http_cfg.out_rb_size = 1 * 1024 * 1024;  // 2MB buffer for FLAC streaming
-    http_cfg.task_stack = 4096 * 12;  // Larger stack for high-bandwidth streams
-    http_cfg.task_prio = 12;      // High priority for streaming
-    http_cfg.task_core = 1;      // Pin to core 1
-    http_cfg.enable_playlist_parser = true;          // Enable playlist parser
-    http_cfg.request_size = 0;   
-    http_cfg.request_range_size = 0;  
-    http_cfg.auto_connect_next_track = true;  // Auto-reconnect for streaming
+    http_cfg.out_rb_size = 256 * 1024;       // Reduce to 256KB for faster start
+    http_cfg.task_stack = 4096 * 6;          // Reduce stack size 
+    http_cfg.task_prio = 8;                  // Lower priority to prevent blocking
+    http_cfg.task_core = 1;                  // Pin to core 1
+    http_cfg.enable_playlist_parser = true;  // Enable playlist parser
+    http_cfg.request_size = 0;            // Smaller request chunks for faster response
+    http_cfg.request_range_size = 0;         // No range requests for streaming  
+    http_cfg.auto_connect_next_track = true; // Auto-reconnect for streaming
     global_http_stream = http_stream_init(&http_cfg);
     if (!global_http_stream) {
         ESP_LOGE("AUDIO_PLAYER", "Failed to create HTTP stream");
