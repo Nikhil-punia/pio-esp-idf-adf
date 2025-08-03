@@ -9,8 +9,6 @@ Note: currently the espressif32 is seto to 6.6.0 in platformio.ini, this is just
 ## To do it yourself
 (you can look at the git history of project to see the steps taken too)
 1. Create a new Platform IO project
-1. Add ESP-ADF submodule with this command: `git submodule add https://github.com/espressif/esp-adf.git esp-adf`
-1. Clone all nested submodules with this command: `git submodule update --init --recursive`
 1. Setup platformio.ini settings:
 ```
 board_build.embed_txtfiles = 
@@ -29,14 +27,13 @@ build_unflags =
 
 
 Notes: 
-* You can just move esp-adf/components to /components and don't need full git repository
-* You don't need esp-adf/esp-idf (typically old version): `git submodule deinit esp-idf`
+* For adding ESP-ADF , submodule with this command: `git submodule add https://github.com/espressif/esp-adf.git esp-adf`
+* Some of the adf components are changed for maintaing the compatiblity with ESP-IDF.
+* The current board setup in main.c is for simple esp32s3 module with no codec chip which plays audio through a external audio dac.
 
-##  Optional add example
-
-1. Add to CMakeLists.txt: `set(COMPONENT_SRCS adf_music.mp3)`
-1. Add to platformio.ini: `board_build.partitions = partitions.csv`
-1. Add data/adf_music.mp3
-1. Add partitions.csv
-1. Use main.c attached
-1. Make sure to "Upload Filesystem Image"
+## Testing The Example
+* You can copy paste any example from the ESP-ADF repo.
+* Mostly examples have a option for configuring the parameters in the .c file or in menuconfig.
+* Choose the correct board in the menuconfig.
+* You can customize the board parameters in the respective board file present in the component folder.
+* Compile and Upload and see ESP-ADF in action.
