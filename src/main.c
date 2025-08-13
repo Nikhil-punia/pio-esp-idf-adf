@@ -423,8 +423,8 @@ static void init_wifi(void)
 
     wifi_config_t wifi_config = {
         .sta = {
-            .ssid = "Groid",
-            .password = "ghotu440@440",
+            .ssid = "Your SSID",
+            .password = "Your PASSWORD",
             .threshold.authmode = WIFI_AUTH_WPA2_PSK,
             .pmf_cfg = {
                 .capable = true,
