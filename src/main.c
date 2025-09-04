@@ -951,7 +951,7 @@ static void handle_binary_upload(httpd_req_t *req, uint8_t *data, size_t len)
     size_t actual_chunk_size = data_len;
     
     if (data_len != header->chunk_size) {
-        ESP_LOGW("WEBSOCKET", "⚠️ CHUNK SIZE MISMATCH: chunk %" PRIu32 " expected %u bytes, got %zu bytes (diff: %d)", 
+        ESP_LOGW("WEBSOCKET", "⚠️ CHUNK SIZE MISMATCH: chunk %" PRIu32 " expected %" PRIu32 " bytes, got %zu bytes (diff: %d)", 
                  header->chunk_index, header->chunk_size, data_len, (int)(header->chunk_size - data_len));
     }
     
@@ -3839,7 +3839,7 @@ static esp_err_t tcp_upload_chunk_handler(httpd_req_t *req)
     uint32_t chunk_index = atoi(chunk_index_str);
     size_t content_length = req->content_len;
     
-    ESP_LOGI("TCP_UPLOAD", "Processing chunk %u: %zu bytes for '%s'", chunk_index, content_length, filename);
+    ESP_LOGI("TCP_UPLOAD", "Processing chunk %" PRIu32 ": %zu bytes for '%s'", chunk_index, content_length, filename);
     
     // Initialize upload session on first chunk
     if (chunk_index == 0) {
@@ -3865,11 +3865,11 @@ static esp_err_t tcp_upload_chunk_handler(httpd_req_t *req)
             return ESP_FAIL;
         }
         
-        ESP_LOGI("TCP_UPLOAD", "Started upload: %s (%u bytes, %u chunks)", filename, total_size, expected_chunks);
+        ESP_LOGI("TCP_UPLOAD", "Started upload: %s (%" PRIu32 " bytes, %" PRIu32 " chunks)", filename, total_size, expected_chunks);
     }
     
     if (!upload_file) {
-        ESP_LOGE("TCP_UPLOAD", "No active upload session for chunk %u", chunk_index);
+        ESP_LOGE("TCP_UPLOAD", "No active upload session for chunk %" PRIu32, chunk_index);
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No active upload session");
         return ESP_FAIL;
     }
@@ -3929,7 +3929,7 @@ static esp_err_t tcp_upload_chunk_handler(httpd_req_t *req)
     // Log progress
     if (received_chunks % 10 == 0 || received_chunks == expected_chunks) {
         float progress = (float)received_size / total_size * 100.0f;
-        ESP_LOGI("TCP_UPLOAD", "Progress: %.1f%% (%u/%u chunks, %u bytes)", 
+        ESP_LOGI("TCP_UPLOAD", "Progress: %.1f%% (%" PRIu32 "/%" PRIu32 " chunks, %" PRIu32 " bytes)", 
                  progress, received_chunks, expected_chunks, received_size);
     }
     
@@ -3938,7 +3938,7 @@ static esp_err_t tcp_upload_chunk_handler(httpd_req_t *req)
     if (upload_complete && upload_file) {
         fclose(upload_file);
         upload_file = NULL;
-        ESP_LOGI("TCP_UPLOAD", "Upload completed: %s (%u bytes)", upload_filename, received_size);
+        ESP_LOGI("TCP_UPLOAD", "Upload completed: %s (%" PRIu32 " bytes)", upload_filename, received_size);
     }
     
     // Send JSON response
