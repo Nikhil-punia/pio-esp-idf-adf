@@ -1,0 +1,5 @@
+Flask==2.3.3
+Werkzeug==2.3.7
+
+# GUI applications use tkinter (included with Python)
+# No additional GUI dependencies needed

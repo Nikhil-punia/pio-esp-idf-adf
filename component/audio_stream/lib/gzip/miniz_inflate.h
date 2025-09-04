@@ -29,7 +29,15 @@
 #if (ESP_IDF_VERSION_MAJOR == 4) && (ESP_IDF_VERSION_MINOR < 3)
 #include "esp32/rom/miniz.h"
 #else
+#ifdef __has_include
+#if __has_include("rom/miniz.h")
 #include "rom/miniz.h"
+#else
+#include "miniz.h"
+#endif
+#else
+#include "rom/miniz.h"
+#endif
 #endif
 
 // Add the API missing in miniz of ROM code

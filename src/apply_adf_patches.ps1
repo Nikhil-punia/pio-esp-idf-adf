@@ -58,11 +58,8 @@ if (-not (Select-String -Path $FREERTOS_ADDITIONS_FILE -Pattern "xTaskCreateRest
     }
 "@
 
-    # Insert before the last line of the file
-    $lines = $fileContent -split "`n"
-    $lastLine = $lines[-1]
-    $contentWithoutLastLine = $lines[0..($lines.Length-2)] -join "`n"
-    $fileContent = $contentWithoutLastLine + $functionCode + "`n" + $lastLine
+    # Insert after 'return xReturn;'
+    $fileContent = $fileContent -replace "(return xReturn;)", "`$1`n$functionCode"
 
     # Save file
     Set-Content -Path $FREERTOS_ADDITIONS_FILE -Value $fileContent -Encoding UTF8
@@ -92,23 +89,7 @@ if (-not (Select-String -Path $IDF_ADDITIONS_FILE -Pattern "xTaskCreateRestricte
                                                   const BaseType_t xCoreID);
 "@
 
-    # Insert declaration after the last function declaration in the file
-    $lines = $fileContent -split "`n"
-    $insertIndex = -1
-    for ($i = $lines.Length - 1; $i -ge 0; $i--) {
-        if ($lines[$i] -match "BaseType_t.*\(.*\);") {
-            $insertIndex = $i
-            break
-        }
-    }
-    
-    if ($insertIndex -ne -1) {
-        $newLines = $lines[0..$insertIndex] + $declaration + $lines[($insertIndex+1)..($lines.Length-1)]
-        $fileContent = $newLines -join "`n"
-    } else {
-        # Fallback: add at end
-        $fileContent = $fileContent + "`n" + $declaration
-    }
+    $fileContent = $fileContent -replace "(BaseType_t xTaskCreatePinnedToCore.*;)", "`$1`n$declaration"
 
     # Save file
     Set-Content -Path $IDF_ADDITIONS_FILE -Value $fileContent -Encoding UTF8
